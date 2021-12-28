@@ -67,6 +67,7 @@ const makeEnv = (
 
 const globalEnv = makeEnv({
   "+": (a: number, b: number) => a + b,
+  "*": (a: number, b: number) => a * b,
   "-": (a: number, b: number) => a - b,
   "=": (a: any, b: any) => a === b,
   log: console.log,
@@ -78,7 +79,7 @@ const makeLambda = (params: string[], body: Exp, env: Env) => ({
   env,
 });
 
-export const evaluate = (ex: Exp, env = globalEnv): Exp | undefined => {
+export const evaluate = (ex: Exp, env: Env): Exp | undefined => {
   while (true) {
     if (typeof ex === "string") return env.find(ex);
     if (!Array.isArray(ex)) return ex;
@@ -205,10 +206,10 @@ const programs = [
     -1,
   ],
   [
-    `(let* ((x 3) (y x))
+    `(let* ((x 3) (y (* x 5)))
       (- x y)
     )`,
-    0,
+    -12,
   ],
   [
     `(let* ((x (+ 1 2)) (y 4))
@@ -219,7 +220,7 @@ const programs = [
 ] as const;
 
 programs.forEach(([program, expectation]) => {
-  const result = evaluate(parse(getStream(tokenize(program))));
+  const result = evaluate(parse(getStream(tokenize(program))), globalEnv);
   const passed =
     typeof expectation === "function"
       ? expectation(result)
