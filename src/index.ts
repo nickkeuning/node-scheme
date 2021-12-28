@@ -100,13 +100,15 @@ export const evaluate = (ex: Exp, env: Env): Exp | undefined => {
           bindings.length < 2
             ? ["let", bindings, ...body]
             : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
-        return evaluate(toLet(bindings), env)
+        ex = toLet(bindings);
+        continue;
       }
       case "let": {
         const [_, bindings, ...body] = ex as any;
         const names = bindings.map(([name]: any) => name);
         const values = bindings.map(([_, value]: any) => value);
-        return evaluate([["lambda", names, ...body], ...values], env);
+        ex = [["lambda", names, ...body], ...values];
+        continue;
       }
       case "lambda": {
         const [_, params, ...body] = ex;
@@ -215,11 +217,19 @@ const programs = [
     )`,
     -8,
   ],
+  [
+    `(let* (
+      (x (do (log 1) (+ 1 2)))
+      (y (do (log 2) 4))
+      (z (do (log 3) (+ x y))))
+        (- (- x y) z)
+    )`,
+    -8,
+  ],
 ] as const;
 
-programs.slice(-1).forEach(([program, expectation]) => {
-// programs.forEach(([program, expectation]) => {
-  const parsed = parse(getStream(tokenize(program)))
+programs.forEach(([program, expectation]) => {
+  const parsed = parse(getStream(tokenize(program)));
   const result = evaluate(
     parsed,
     makeEnv({ ...globalEnv, log: () => {} })
