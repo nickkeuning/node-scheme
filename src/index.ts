@@ -97,6 +97,22 @@ export const evaluate = (ex: Exp, env = globalEnv): Exp | undefined => {
         const [_, params, ...body] = ex;
         return makeLambda(params as string[], ["do", ...body], env);
       }
+      case "let": {
+        const [_, bindings, ...body] = ex as any;
+        const names = bindings.map(([name]: any) => name);
+        const values = bindings.map(([_, value]: any) => value);
+        ex = [["lambda", names, ...body], ...values];
+        continue;
+      }
+      case "let*": {
+        const [_, bindings, ...body] = ex as any;
+        const toLet = (bindings: any): any =>
+          bindings.length < 2
+            ? ["let", bindings, ...body]
+            : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
+        ex = toLet(bindings);
+        continue;
+      }
       case "if": {
         const [_, test, consequence, alternate] = ex;
         ex = evaluate(test, env) ? consequence : alternate;
@@ -182,6 +198,24 @@ const programs = [
     )`,
     50005000,
   ],
+  [
+    `(let ((x (+ 1 2)) (y 4))
+      (- x y)
+    )`,
+    -1,
+  ],
+  [
+    `(let* ((x 3) (y x))
+      (- x y)
+    )`,
+    0,
+  ],
+  [
+    `(let* ((x (+ 1 2)) (y 4))
+      (- x y)
+    )`,
+    -1,
+  ],
 ] as const;
 
 programs.forEach(([program, expectation]) => {
@@ -191,5 +225,5 @@ programs.forEach(([program, expectation]) => {
       ? expectation(result)
       : result === expectation;
   console.log({ passed });
-  if (!passed) console.log({ program, expectation });
+  if (!passed) console.log({ program, expectation, result });
 });
