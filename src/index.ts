@@ -65,13 +65,13 @@ const makeEnv = (
   return { find, define, set, extend };
 };
 
-const globalEnv = makeEnv({
+const globalEnv = {
   "+": (a: number, b: number) => a + b,
   "*": (a: number, b: number) => a * b,
   "-": (a: number, b: number) => a - b,
   "=": (a: any, b: any) => a === b,
   log: console.log,
-});
+};
 
 const makeLambda = (params: string[], body: Exp, env: Env) => ({
   params,
@@ -220,7 +220,10 @@ const programs = [
 ] as const;
 
 programs.forEach(([program, expectation]) => {
-  const result = evaluate(parse(getStream(tokenize(program))), globalEnv);
+  const result = evaluate(
+    parse(getStream(tokenize(program))),
+    makeEnv({ ...globalEnv, log: () => {} })
+  );
   const passed =
     typeof expectation === "function"
       ? expectation(result)
