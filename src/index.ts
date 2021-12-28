@@ -94,25 +94,23 @@ export const evaluate = (ex: Exp, env: Env): Exp | undefined => {
         env.set(name as string, evaluate(value, env));
         return;
       }
-      case "lambda": {
-        const [_, params, ...body] = ex;
-        return makeLambda(params as string[], ["do", ...body], env);
-      }
-      case "let": {
-        const [_, bindings, ...body] = ex as any;
-        const names = bindings.map(([name]: any) => name);
-        const values = bindings.map(([_, value]: any) => value);
-        ex = [["lambda", names, ...body], ...values];
-        continue;
-      }
       case "let*": {
         const [_, bindings, ...body] = ex as any;
         const toLet = (bindings: any): any =>
           bindings.length < 2
             ? ["let", bindings, ...body]
             : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
-        ex = toLet(bindings);
-        continue;
+        return evaluate(toLet(bindings), env)
+      }
+      case "let": {
+        const [_, bindings, ...body] = ex as any;
+        const names = bindings.map(([name]: any) => name);
+        const values = bindings.map(([_, value]: any) => value);
+        return evaluate([["lambda", names, ...body], ...values], env);
+      }
+      case "lambda": {
+        const [_, params, ...body] = ex;
+        return makeLambda(params as string[], ["do", ...body], env);
       }
       case "if": {
         const [_, test, consequence, alternate] = ex;
