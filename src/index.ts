@@ -1,5 +1,5 @@
 export const tokenize = (program: string) =>
-  program.replace(/\(/g, "( ").replace(/\)/g, " )").trim().split(/\s+/);
+  program.replace(/\(/g, " ( ").replace(/\)/g, " ) ").trim().split(/\s+/);
 
 type Atom = string | number | boolean;
 type Lambda = {
@@ -210,16 +210,18 @@ const programs = [
     -12,
   ],
   [
-    `(let* ((x (+ 1 2)) (y 4))
-      (- x y)
+    `(let* ((x (+ 1 2)) (y 4) (z (+ x y)))
+      (-(- x y)z)
     )`,
-    -1,
+    -8,
   ],
 ] as const;
 
-programs.forEach(([program, expectation]) => {
+programs.slice(-1).forEach(([program, expectation]) => {
+// programs.forEach(([program, expectation]) => {
+  const parsed = parse(getStream(tokenize(program)))
   const result = evaluate(
-    parse(getStream(tokenize(program))),
+    parsed,
     makeEnv({ ...globalEnv, log: () => {} })
   );
   const passed =
