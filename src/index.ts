@@ -226,6 +226,15 @@ const programs = [
     )`,
     -8,
   ],
+  [
+    `(let* (
+      (add +)
+      (double (lambda (x) (log 1) (log x) (add x x)))
+      (quad (lambda (x) (log 2) (log x) (double (double x)))))
+        (quad 4)
+    )`,
+    16,
+  ],
 ] as const;
 
 programs.forEach(([program, expectation]) => {
