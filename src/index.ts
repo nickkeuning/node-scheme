@@ -1,7 +1,7 @@
 export const tokenize = (program: string) =>
   program.replace(/\(/g, " ( ").replace(/\)/g, " ) ").trim().split(/\s+/);
 
-type Atom = string | number | boolean;
+type Atom = string | number | boolean | null;
 type Lambda = {
   params: string[];
   body: Exp;
@@ -16,6 +16,7 @@ const atom = (token: string): Atom => {
   if (!isNaN(float)) return float;
   if (token.toLowerCase() === "true") return true;
   if (token.toLowerCase() === "false") return false;
+  if (token.toLowerCase() === "nil") return null;
   return token;
 };
 
@@ -79,90 +80,98 @@ const makeLambda = (params: string[], body: Exp, env: Env) => ({
   env,
 });
 
-export const evaluate = (ex: Exp, env: Env, k: any): Exp | undefined => {
+export const evaluate = (ex: Exp, env: Env, k: any): any => {
   if (typeof ex === "string") {
-    k(env.find(ex));
-    return;
+    return k(env.find(ex));
   }
   if (!Array.isArray(ex)) {
-    k(ex);
-    return;
+    return k(ex);
   }
   switch (ex[0]) {
     case "define": {
-      const [_, name, value] = ex;
-      evaluate(value, env, (val: any) => {
-        env.define(name as string, val);
-        k();
+      const [_, name, valueExpr] = ex;
+      return evaluate(valueExpr, env, (value: any) => {
+        return k(env.define(name as string, value));
       });
-      return;
     }
     case "set!": {
-      const [_, name, value] = ex;
-      evaluate(value, env, (val: any) => {
-        env.set(name as string, val);
-        k();
+      const [_, name, valueExpr] = ex;
+      return evaluate(valueExpr, env, (value: any) => {
+        return k(env.set(name as string, value));
       });
-      return;
+    }
+    case "if": {
+      const [_, test, consequence, alternate] = ex;
+      return evaluate(test, env, (result: any) => {
+        return evaluate(result ? consequence : alternate, env, k);
+      });
+    }
+    case "letrec": {
+      const [_, bindings, ...bodyExs] = ex as any;
+      const defs = bindings.map(([name]: any) => ["define", name, null]);
+      const sets = bindings.map(([name, valEx]: any) => ["set!", name, valEx]);
+      return evaluate([["lambda", [], ...defs, ...sets, ...bodyExs]], env, k);
     }
     case "let*": {
-      const [_, bindings, ...body] = ex as any;
+      const [_, bindings, ...bodyExprs] = ex as any;
       const toLet = (bindings: any): any =>
         bindings.length < 2
-          ? ["let", bindings, ...body]
+          ? ["let", bindings, ...bodyExprs]
           : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
-      evaluate(toLet(bindings), env, k);
-      return;
+      return evaluate(toLet(bindings), env, k);
     }
     case "let": {
       const [_, bindings, ...body] = ex as any;
       const names = bindings.map(([name]: any) => name);
       const values = bindings.map(([_, value]: any) => value);
-      evaluate([["lambda", names, ...body], ...values], env, k);
-      return;
+      return evaluate([["lambda", names, ...body], ...values], env, k);
     }
     case "lambda": {
       const [_, params, ...body] = ex;
-      k(makeLambda(params as string[], ["do", ...body], env));
-      return;
-    }
-    case "if": {
-      const [_, test, consequence, alternate] = ex;
-      evaluate(test, env, (result: any) => {
-        evaluate(result ? consequence : alternate, env, k);
-      });
-      return;
+      return k(makeLambda(params as string[], ["do", ...body], env));
     }
     case "do": {
-      for (const exp of ex.slice(1, -1)) evaluate(exp, env, () => {});
-      evaluate(ex.slice(-1)[0], env, k);
-      return;
+      const [_, ...exprs] = ex as any;
+      const loop = (exprs: any[]): any => {
+        if (exprs.length > 1) {
+          return evaluate(exprs.shift(), env, () => {
+            return loop(exprs);
+          });
+        }
+        return evaluate(exprs[0], env, k);
+      };
+      return loop(exprs);
     }
     default: {
-      evaluate(ex[0], env, (proc: any) => {
-        if (proc === undefined) throw `"${ex[0]}" is not a function`;
-        const loop = (rawArgs: any[], args: any[]) => {
-          if (rawArgs.length > 0) {
-            evaluate(rawArgs.shift(), env, (arg: any) => {
+      const [procName, ...argExprs] = ex;
+      return evaluate(procName, env, (proc: any) => {
+        if (proc === undefined) throw `"${ex[0]}" could not be found`;
+        const loop = (argExprs: any[], args: any[]) => {
+          if (argExprs.length > 0) {
+            return evaluate(argExprs.shift(), env, (arg: any) => {
               args.push(arg);
-              loop(rawArgs, args);
+              return loop(argExprs, args);
             });
           } else {
             if (typeof proc === "function") {
-              k(proc(...args));
+              return k(proc(...args));
             } else {
-              evaluate(proc.body, proc.env.extend(proc.params, args), k);
+              return () =>
+                evaluate(proc.body, proc.env.extend(proc.params, args), k);
             }
           }
         };
-        loop(ex.slice(1), []);
+        return loop(argExprs, []);
       });
-      return;
     }
   }
 };
 
 const programs = [
+  ["((lambda () 1))", 1],
+  ["nil", null],
+  ["2", 2],
+  ["(+ 1 1)", 2],
   ["(+ (+ 1 2) (+ 3 4))", 10],
   ["((lambda (a b) (+ a b)) 1 2)", 3],
   ["((lambda (a b) b) 1 2)", 2],
@@ -250,46 +259,93 @@ const programs = [
     )`,
     16,
   ],
-  // [
-  //   `(do
-  //     (define fib
-  //       (lambda (n)
-  //         (if (= n 0)
-  //             0
-  //             (if (= n 1)
-  //                 1
-  //                 (+ (fib (- n 1)) (fib (- n 2)))))))
-  //     (fib 10)
-  //   )`,
-  //   55,
-  // ],
-  // [
-  //   `(do
-  //     (define sum-to-n
-  //       (lambda (n)
-  //         (define sum-to-n-inner
-  //           (lambda (n acc)
-  //             (if (= n 0)
-  //               acc
-  //               (sum-to-n-inner (- n 1) (+ n acc)))))
-  //         (sum-to-n-inner n 0)
-  //       )
-  //     )
-  //     (sum-to-n 100000)
-  //   )`,
-  //   5000050000,
-  // ],
+  [
+    `(do
+      (define sum-to-n
+        (lambda (n)
+          (define sum-to-n-inner
+            (lambda (n acc)
+              (if (= n 0)
+                acc
+                (sum-to-n-inner (- n 1) (+ n acc)))))
+          (sum-to-n-inner n 0)
+        )
+      )
+      (sum-to-n 10000)
+    )`,
+    50005000,
+  ],
+  [
+    `(do
+      (define fib
+        (lambda (n)
+          (if (= n 0)
+              0
+              (if (= n 1)
+                  1
+                  (+ (fib (- n 1)) (fib (- n 2)))))))
+      (fib 10)
+    )`,
+    55,
+  ],
+  [
+    `(letrec (
+      (sum-to-n-inner
+        (lambda (n acc)
+          (if (= n 0)
+            acc
+            (sum-to-n-inner (- n 1) (+ n acc)))))
+      (sum-to-n 
+        (lambda (n)
+          (sum-to-n-inner n 0))))
+        (sum-to-n 10000)
+    )`,
+    50005000,
+  ],
+  [
+    `(letrec (
+      (zero? 
+        (lambda (n)
+          (= n 0)))
+      (dec
+        (lambda (n)
+          (- n 1)))
+      (is-even?
+        (lambda (n)
+          (if (zero? n) true (is-odd? (dec n)))))
+      (is-odd?
+        (lambda (n)
+          (if (zero? n) false (is-even? (dec n))))))
+        (is-odd? 111111))`,
+    true,
+  ],
 ] as const;
 
-programs.forEach(([program, expectation]) => {
+const trampoline = (f: any, ...args: any) => {
+  let result = f(...args);
+  while (typeof result === "function") result = result();
+  return result;
+};
+
+programs.slice().forEach(([program, expectation], i) => {
   const parsed = parse(getStream(tokenize(program)));
-  evaluate(parsed, makeEnv({ ...globalEnv, log: () => {} }), (result: any) => {
+  let result = null;
+  try {
+    result = trampoline(
+      evaluate,
+      parsed,
+      makeEnv({ ...globalEnv, log: () => {} }),
+      (res: any) => res
+    );
+  } catch (e) {
+    result = `Error: ${e}`;
+  } finally {
     const passed =
       typeof expectation === "function"
         ? expectation(result)
         : result === expectation;
 
-    console.log({ passed });
+    console.log({ test: i, passed });
     if (!passed) console.log({ program, expectation, result });
-  });
+  }
 });
