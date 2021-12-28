@@ -79,59 +79,112 @@ const makeLambda = (params: string[], body: Exp, env: Env) => ({
   env,
 });
 
-export const evaluate = (ex: Exp, env: Env): Exp | undefined => {
-  if (typeof ex === "string") return env.find(ex);
-  if (!Array.isArray(ex)) return ex;
+export const evaluate = (ex: Exp, env: Env, k: any): Exp | undefined => {
+  if (typeof ex === "string") {
+    k(env.find(ex));
+    return;
+  }
+  if (!Array.isArray(ex)) {
+    k(ex);
+    return;
+  }
   switch (ex[0]) {
     case "define": {
       const [_, name, value] = ex;
-      env.define(name as string, evaluate(value, env));
+      evaluate(value, env, (val: any) => {
+        env.define(name as string, val);
+        k();
+      });
       return;
     }
     case "set!": {
       const [_, name, value] = ex;
-      env.set(name as string, evaluate(value, env));
+      evaluate(value, env, (val: any) => {
+        env.set(name as string, val);
+        k();
+      });
       return;
     }
-    // case "let*": {
-    //   const [_, bindings, ...body] = ex as any;
-    //   const toLet = (bindings: any): any =>
-    //     bindings.length < 2
-    //       ? ["let", bindings, ...body]
-    //       : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
-    //   return evaluate(toLet(bindings), env);
-    // }
-    // case "let": {
-    //   const [_, bindings, ...body] = ex as any;
-    //   const names = bindings.map(([name]: any) => name);
-    //   const values = bindings.map(([_, value]: any) => value);
-    //   return evaluate([["lambda", names, ...body], ...values], env);
-    // }
+    case "let*": {
+      const [_, bindings, ...body] = ex as any;
+      const toLet = (bindings: any): any =>
+        bindings.length < 2
+          ? ["let", bindings, ...body]
+          : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
+      evaluate(toLet(bindings), env, k);
+      return;
+    }
+    case "let": {
+      const [_, bindings, ...body] = ex as any;
+      const names = bindings.map(([name]: any) => name);
+      const values = bindings.map(([_, value]: any) => value);
+      evaluate([["lambda", names, ...body], ...values], env, k);
+      return;
+    }
     case "lambda": {
       const [_, params, ...body] = ex;
-      return makeLambda(params as string[], ["do", ...body], env);
+      k(makeLambda(params as string[], ["do", ...body], env));
+      return;
     }
     case "if": {
       const [_, test, consequence, alternate] = ex;
-      return evaluate(evaluate(test, env) ? consequence : alternate, env);
+      evaluate(test, env, (result: any) => {
+        evaluate(result ? consequence : alternate, env, k);
+      });
+      return;
     }
     case "do": {
-      for (const exp of ex.slice(1, -1)) evaluate(exp, env);
-      return evaluate(ex.slice(-1)[0], env);
+      for (const exp of ex.slice(1, -1)) evaluate(exp, env, () => {});
+      evaluate(ex.slice(-1)[0], env, k);
+      return;
     }
     default: {
-      const [proc, ...args] = ex.map((exp) => evaluate(exp, env)) as any;
-      return typeof proc === "function"
-        ? proc(...args)
-        : evaluate(proc.body, proc.env.extend(proc.params, args));
+      evaluate(ex[0], env, (proc: any) => {
+        if (proc === undefined) throw `"${ex[0]}" is not a function`;
+        const loop = (rawArgs: any[], args: any[]) => {
+          if (rawArgs.length > 0) {
+            evaluate(rawArgs.shift(), env, (arg: any) => {
+              args.push(arg);
+              loop(rawArgs, args);
+            });
+          } else {
+            if (typeof proc === "function") {
+              k(proc(...args));
+            } else {
+              evaluate(proc.body, proc.env.extend(proc.params, args), k);
+            }
+          }
+        };
+        loop(ex.slice(1), []);
+      });
+      return;
     }
   }
 };
 
 const programs = [
   ["(+ (+ 1 2) (+ 3 4))", 10],
-  ["(if false 1 2)", 2],
-  ["(if true 1 2)", 1],
+  ["((lambda (a b) (+ a b)) 1 2)", 3],
+  ["((lambda (a b) b) 1 2)", 2],
+  ["(do (define a 1) a)", 1],
+  ["(do (define a 1) ((lambda (ignored) (define a 2)) true) a)", 1],
+  ["(do (define a 1) (set! a 2) a)", 2],
+  [
+    `(do
+      (define sum-to-n
+        (lambda (n)
+          (define sum-to-n-inner
+            (lambda (n acc)
+              (if (= n 0)
+                acc
+                (sum-to-n-inner (- n 1) (+ n acc)))))
+          (sum-to-n-inner n 0)
+        )
+      )
+      (sum-to-n 100)
+    )`,
+    5050,
+  ],
   [
     "(lambda (a b) (+ a b))",
     ({ body: [doSymbol, body] }: any) => {
@@ -143,23 +196,10 @@ const programs = [
       );
     },
   ],
+  ["(if false 1 2)", 2],
+  ["(if true 1 2)", 1],
   ["(do (define add (lambda (a b) (+ a b))) (add 1 2) (add 3 4))", 7],
-  ["((lambda (a b) (+ a b)) 1 2)", 3],
-  ["(do (define a 1) (set! a 2) a)", 2],
   ["(do (log 1) 1)", 1],
-  [
-    `(do
-      (define fib
-        (lambda (n)
-          (if (= n 0)
-              0
-              (if (= n 1)
-                  1
-                  (+ (fib (- n 1)) (fib (- n 2)))))))
-      (fib 10)
-    )`,
-    55,
-  ],
   [
     `(do
       (define a 1)
@@ -174,6 +214,55 @@ const programs = [
     )`,
     2,
   ],
+  [
+    `(let ((x (+ 1 2)) (y 4))
+      (- x y)
+    )`,
+    -1,
+  ],
+  [
+    `(let* ((x 3) (y (* x 5)))
+      (- x y)
+    )`,
+    -12,
+  ],
+  [
+    `(let* ((x (+ 1 2)) (y 4) (z (+ x y)))
+      (-(- x y)z)
+    )`,
+    -8,
+  ],
+  [
+    `(let* (
+      (x (do (log 1) (+ 1 2)))
+      (y (do (log 2) 4))
+      (z (do (log 3) (+ x y))))
+        (- (- x y) z)
+    )`,
+    -8,
+  ],
+  [
+    `(let* (
+      (add +)
+      (double (lambda (x) (log 1) (log x) (add x x)))
+      (quad (lambda (x) (log 2) (log x) (double (double x)))))
+        (quad 4)
+    )`,
+    16,
+  ],
+  // [
+  //   `(do
+  //     (define fib
+  //       (lambda (n)
+  //         (if (= n 0)
+  //             0
+  //             (if (= n 1)
+  //                 1
+  //                 (+ (fib (- n 1)) (fib (- n 2)))))))
+  //     (fib 10)
+  //   )`,
+  //   55,
+  // ],
   // [
   //   `(do
   //     (define sum-to-n
@@ -190,51 +279,17 @@ const programs = [
   //   )`,
   //   5000050000,
   // ],
-  // [
-  //   `(let ((x (+ 1 2)) (y 4))
-  //     (- x y)
-  //   )`,
-  //   -1,
-  // ],
-  // [
-  //   `(let* ((x 3) (y (* x 5)))
-  //     (- x y)
-  //   )`,
-  //   -12,
-  // ],
-  // [
-  //   `(let* ((x (+ 1 2)) (y 4) (z (+ x y)))
-  //     (-(- x y)z)
-  //   )`,
-  //   -8,
-  // ],
-  // [
-  //   `(let* (
-  //     (x (do (log 1) (+ 1 2)))
-  //     (y (do (log 2) 4))
-  //     (z (do (log 3) (+ x y))))
-  //       (- (- x y) z)
-  //   )`,
-  //   -8,
-  // ],
-  // [
-  //   `(let* (
-  //     (add +)
-  //     (double (lambda (x) (log 1) (log x) (add x x)))
-  //     (quad (lambda (x) (log 2) (log x) (double (double x)))))
-  //       (quad 4)
-  //   )`,
-  //   16,
-  // ],
 ] as const;
 
 programs.forEach(([program, expectation]) => {
   const parsed = parse(getStream(tokenize(program)));
-  const result = evaluate(parsed, makeEnv({ ...globalEnv, log: () => {} }));
-  const passed =
-    typeof expectation === "function"
-      ? expectation(result)
-      : result === expectation;
-  console.log({ passed });
-  if (!passed) console.log({ program, expectation, result });
+  evaluate(parsed, makeEnv({ ...globalEnv, log: () => {} }), (result: any) => {
+    const passed =
+      typeof expectation === "function"
+        ? expectation(result)
+        : result === expectation;
+
+    console.log({ passed });
+    if (!passed) console.log({ program, expectation, result });
+  });
 });
