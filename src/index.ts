@@ -74,13 +74,7 @@ const globalEnv = {
   log: console.log,
 };
 
-const makeLambda = (params: string[], body: Exp, env: Env) => ({
-  params,
-  body,
-  env,
-});
-
-export const evaluate = (ex: Exp, env: Env, k: any): any => {
+export const evalCps = (ex: Exp, env: Env, k: any): any => {
   if (typeof ex === "string") {
     return k(env.find(ex));
   }
@@ -90,27 +84,27 @@ export const evaluate = (ex: Exp, env: Env, k: any): any => {
   switch (ex[0]) {
     case "define": {
       const [_, name, valueExpr] = ex;
-      return evaluate(valueExpr, env, (value: any) => {
+      return evalCps(valueExpr, env, (value: any) => {
         return k(env.define(name as string, value));
       });
     }
     case "set!": {
       const [_, name, valueExpr] = ex;
-      return evaluate(valueExpr, env, (value: any) => {
+      return evalCps(valueExpr, env, (value: any) => {
         return k(env.set(name as string, value));
       });
     }
     case "if": {
       const [_, test, consequence, alternate] = ex;
-      return evaluate(test, env, (result: any) => {
-        return evaluate(result ? consequence : alternate, env, k);
+      return evalCps(test, env, (result: any) => {
+        return evalCps(result ? consequence : alternate, env, k);
       });
     }
     case "letrec": {
       const [_, bindings, ...bodyExs] = ex as any;
       const defs = bindings.map(([name]: any) => ["define", name, null]);
       const sets = bindings.map(([name, valEx]: any) => ["set!", name, valEx]);
-      return evaluate([["lambda", [], ...defs, ...sets, ...bodyExs]], env, k);
+      return evalCps([["lambda", [], ...defs, ...sets, ...bodyExs]], env, k);
     }
     case "let*": {
       const [_, bindings, ...bodyExprs] = ex as any;
@@ -118,46 +112,48 @@ export const evaluate = (ex: Exp, env: Env, k: any): any => {
         bindings.length < 2
           ? ["let", bindings, ...bodyExprs]
           : ["let", bindings.slice(0, 1), toLet(bindings.slice(1))];
-      return evaluate(toLet(bindings), env, k);
+      return evalCps(toLet(bindings), env, k);
     }
     case "let": {
       const [_, bindings, ...body] = ex as any;
       const names = bindings.map(([name]: any) => name);
       const values = bindings.map(([_, value]: any) => value);
-      return evaluate([["lambda", names, ...body], ...values], env, k);
+      return evalCps([["lambda", names, ...body], ...values], env, k);
     }
     case "lambda": {
       const [_, params, ...body] = ex;
-      return k(makeLambda(params as string[], ["do", ...body], env));
+      return k({ params, body: ["do", ...body], env, isLambda: true });
     }
     case "do": {
       const [_, ...exprs] = ex as any;
       const loop = (exprs: any[]): any => {
         if (exprs.length > 1) {
-          return evaluate(exprs.shift(), env, () => {
+          return evalCps(exprs.shift(), env, () => {
             return loop(exprs);
           });
         }
-        return evaluate(exprs[0], env, k);
+        return evalCps(exprs[0], env, k);
       };
       return loop(exprs);
     }
     default: {
       const [procName, ...argExprs] = ex;
-      return evaluate(procName, env, (proc: any) => {
+      return evalCps(procName, env, (proc: any) => {
         if (proc === undefined) throw `"${ex[0]}" could not be found`;
         const loop = (argExprs: any[], args: any[]) => {
           if (argExprs.length > 0) {
-            return evaluate(argExprs.shift(), env, (arg: any) => {
+            return evalCps(argExprs.shift(), env, (arg: any) => {
               args.push(arg);
               return loop(argExprs, args);
             });
           } else {
             if (typeof proc === "function") {
               return k(proc(...args));
-            } else {
+            } else if (proc.isLambda === true) {
               return () =>
-                evaluate(proc.body, proc.env.extend(proc.params, args), k);
+                evalCps(proc.body, proc.env.extend(proc.params, args), k);
+            } else {
+              throw `procedure ${proc} is not callable`;
             }
           }
         };
@@ -167,8 +163,23 @@ export const evaluate = (ex: Exp, env: Env, k: any): any => {
   }
 };
 
+const trampoline = (f: any, ...args: any) => {
+  let result = f(...args);
+  while (typeof result === "function") result = result();
+  return result;
+};
+
+const evaluate = (program: string, env = makeEnv(globalEnv)) =>
+  trampoline(
+    evalCps,
+    parse(getStream(tokenize(program))),
+    env,
+    (res: any) => res
+  );
+
 const programs = [
   ["((lambda () 1))", 1],
+  ["(((lambda () 1)))", "Error: procedure 1 is not callable"],
   ["nil", null],
   ["2", 2],
   ["(+ 1 1)", 2],
@@ -321,21 +332,13 @@ const programs = [
   ],
 ] as const;
 
-const trampoline = (f: any, ...args: any) => {
-  let result = f(...args);
-  while (typeof result === "function") result = result();
-  return result;
-};
-
 programs.slice().forEach(([program, expectation], i) => {
-  const parsed = parse(getStream(tokenize(program)));
   let result = null;
+  let logged = [] as any;
   try {
-    result = trampoline(
-      evaluate,
-      parsed,
-      makeEnv({ ...globalEnv, log: () => {} }),
-      (res: any) => res
+    result = evaluate(
+      program,
+      makeEnv({ ...globalEnv, log: (msg: any) => logged.push(msg) })
     );
   } catch (e) {
     result = `Error: ${e}`;
@@ -345,7 +348,9 @@ programs.slice().forEach(([program, expectation], i) => {
         ? expectation(result)
         : result === expectation;
 
-    console.log({ test: i, passed });
+    console.log(
+      logged.length > 0 ? { test: i, passed, logged } : { test: i, passed }
+    );
     if (!passed) console.log({ program, expectation, result });
   }
 });
