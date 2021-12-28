@@ -195,9 +195,9 @@ const programs = [
           (sum-to-n-inner n 0)
         )
       )
-      (sum-to-n 10000)
+      (sum-to-n 100000)
     )`,
-    50005000,
+    5000050000,
   ],
   [
     `(let ((x (+ 1 2)) (y 4))
