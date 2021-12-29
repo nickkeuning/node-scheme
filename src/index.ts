@@ -56,7 +56,7 @@ const makeEnv = (
   map: Record<string, any>,
   pGet: ((key: string) => any) | undefined = undefined,
   pSet: ((key: string, value: any) => any) | undefined = undefined
-): Env => {
+) => {
   const define = (key: string, value: any) => (map[key] = value);
   const find = (key: string) => map[key] ?? pGet?.(key);
   const set = (key: string, value: any) =>
@@ -67,11 +67,11 @@ const makeEnv = (
 };
 
 const globalEnv = {
-  "+": (a: number, b: number) => a + b,
-  "*": (a: number, b: number) => a * b,
-  "-": (a: number, b: number) => a - b,
-  "=": (a: any, b: any) => a === b,
-  log: console.log,
+  "+": (k: any, a: number, b: number) => k(a + b),
+  "*": (k: any, a: number, b: number) => k(a * b),
+  "-": (k: any, a: number, b: number) => k(a - b),
+  "=": (k: any, a: any, b: any) => k(a === b),
+  log: (k: any, msg: any) => k(console.log(msg)),
 };
 
 export const evalCps = (ex: Exp, env: Env, k: any): any => {
@@ -82,24 +82,6 @@ export const evalCps = (ex: Exp, env: Env, k: any): any => {
     return k(ex);
   }
   switch (ex[0]) {
-    case "define": {
-      const [_, name, valueExpr] = ex;
-      return evalCps(valueExpr, env, (value: any) => {
-        return k(env.define(name as string, value));
-      });
-    }
-    case "set!": {
-      const [_, name, valueExpr] = ex;
-      return evalCps(valueExpr, env, (value: any) => {
-        return k(env.set(name as string, value));
-      });
-    }
-    case "if": {
-      const [_, test, consequence, alternate] = ex;
-      return evalCps(test, env, (result: any) => {
-        return evalCps(result ? consequence : alternate, env, k);
-      });
-    }
     case "letrec": {
       const [_, bindings, ...bodyExs] = ex as any;
       const defs = bindings.map(([name]: any) => ["define", name, null]);
@@ -120,44 +102,55 @@ export const evalCps = (ex: Exp, env: Env, k: any): any => {
       const values = bindings.map(([_, value]: any) => value);
       return evalCps([["lambda", names, ...body], ...values], env, k);
     }
+    case "define": {
+      const [_, name, valueExpr] = ex;
+      return evalCps(valueExpr, env, (value: any) =>
+        k(env.define(name as string, value))
+      );
+    }
+    case "set!": {
+      const [_, name, valueExpr] = ex;
+      return evalCps(valueExpr, env, (value: any) =>
+        k(env.set(name as string, value))
+      );
+    }
+    case "if": {
+      const [_, test, consequence, alternate] = ex;
+      return evalCps(test, env, (result: any) =>
+        evalCps(result ? consequence : alternate, env, k)
+      );
+    }
+    case "call/cc": {
+      const [_, lambda] = ex as any;
+      const cc = (_: any, ret: any) => k(ret);
+      return evalCps([lambda, cc] as any, env, k);
+    }
     case "lambda": {
-      const [_, params, ...body] = ex;
-      return k({ params, body: ["do", ...body], env, isLambda: true });
+      const [_, params, ...body] = ex as any;
+      return k((callback: any, ...args: any) =>
+        evalCps(["do", ...body], env.extend(params, args), callback)
+      );
     }
     case "do": {
       const [_, ...exprs] = ex as any;
-      const loop = (exprs: any[]): any => {
-        if (exprs.length > 1) {
-          return evalCps(exprs.shift(), env, () => {
-            return loop(exprs);
-          });
-        }
-        return evalCps(exprs[0], env, k);
-      };
+      const loop = ([h, ...t]: any[]): any =>
+        t.length > 0 ? evalCps(h, env, () => loop(t)) : evalCps(h, env, k);
       return loop(exprs);
     }
     default: {
-      const [procName, ...argExprs] = ex;
-      return evalCps(procName, env, (proc: any) => {
-        if (proc === undefined) throw `"${ex[0]}" could not be found`;
-        const loop = (argExprs: any[], args: any[]) => {
-          if (argExprs.length > 0) {
-            return evalCps(argExprs.shift(), env, (arg: any) => {
-              args.push(arg);
-              return loop(argExprs, args);
-            });
-          } else {
-            if (typeof proc === "function") {
-              return k(proc(...args));
-            } else if (proc.isLambda === true) {
-              return () =>
-                evalCps(proc.body, proc.env.extend(proc.params, args), k);
-            } else {
-              throw `procedure ${proc} is not callable`;
-            }
-          }
-        };
-        return loop(argExprs, []);
+      const [rawProc, ...rawArgs] = ex;
+      return evalCps(rawProc, env, (proc: any) => {
+        if (proc === undefined) {
+          throw `"${ex[0]}" could not be found`;
+        }
+        if (typeof proc !== "function") {
+          throw `"${proc}" is not callable`;
+        }
+        const loop = ([rawArg, ...rest]: any[], args: any[]) =>
+          rawArg === undefined
+            ? () => proc(k, ...args)
+            : evalCps(rawArg, env, (arg: any) => loop(rest, [...args, arg]));
+        return loop(rawArgs, []);
       });
     }
   }
@@ -178,8 +171,10 @@ const evaluate = (program: string, env = makeEnv(globalEnv)) =>
   );
 
 const programs = [
+  ["((lambda (fun) (fun 2)) log)", undefined],
+  ["((lambda (fun) (fun 2)) (lambda (num) (+ num 1)))", 3],
   ["((lambda () 1))", 1],
-  ["(((lambda () 1)))", "Error: procedure 1 is not callable"],
+  ["(((lambda () 1)))", 'Error: "1" is not callable'],
   ["nil", null],
   ["2", 2],
   ["(+ 1 1)", 2],
@@ -204,17 +199,6 @@ const programs = [
       (sum-to-n 100)
     )`,
     5050,
-  ],
-  [
-    "(lambda (a b) (+ a b))",
-    ({ body: [doSymbol, body] }: any) => {
-      return (
-        doSymbol === "do" &&
-        body[0] === "+" &&
-        body[1] === "a" &&
-        body[2] === "b"
-      );
-    },
   ],
   ["(if false 1 2)", 2],
   ["(if true 1 2)", 1],
@@ -330,6 +314,27 @@ const programs = [
         (is-odd? 111111))`,
     true,
   ],
+  [
+    `(let (
+      (f
+        (lambda (return)
+          (return 2)
+          3)))
+      (log (f (lambda (x) x)))
+      (call/cc f)
+    )`,
+    2,
+  ],
+  // [
+  //   `(let* (
+  //     (yin
+  //       ((lambda (cc) (log 1) cc) (call/cc (lambda (c) c))))
+  //     (yang
+  //       ((lambda (cc) (log 2) cc) (call/cc (lambda (c) c))))
+  //     )
+  //   (yin yang))`,
+  //   undefined,
+  // ],
 ] as const;
 
 programs.slice().forEach(([program, expectation], i) => {
@@ -338,15 +343,12 @@ programs.slice().forEach(([program, expectation], i) => {
   try {
     result = evaluate(
       program,
-      makeEnv({ ...globalEnv, log: (msg: any) => logged.push(msg) })
+      makeEnv({ ...globalEnv, log: (k: any, msg: any) => k(logged.push(msg)) })
     );
   } catch (e) {
     result = `Error: ${e}`;
   } finally {
-    const passed =
-      typeof expectation === "function"
-        ? expectation(result)
-        : result === expectation;
+    const passed = result === expectation;
 
     console.log(
       logged.length > 0 ? { test: i, passed, logged } : { test: i, passed }
