@@ -71,9 +71,16 @@ const globalEnv = {
   "*": (k: any, a: number, b: number) => k(a * b),
   "-": (k: any, a: number, b: number) => k(a - b),
   "=": (k: any, a: any, b: any) => k(a === b),
-  log: (k: any, msg: any) => k(console.log(msg)),
+  display: (k: any, msg: any) => k(console.log(msg)),
 };
 
+
+/*
+CPS transformed recursive evaluation. Always returns the result of recursing
+or calling the continuation. This allows infinite recursion via trampoline
+without throwing stack overflows. User defined function application returns
+a thunk representing apply the function to its args and the continuation.
+*/
 export const evalCps = (ex: Exp, env: Env, k: any): any => {
   if (typeof ex === "string") {
     return k(env.find(ex));
@@ -128,10 +135,10 @@ export const evalCps = (ex: Exp, env: Env, k: any): any => {
     case "lambda": {
       const [_, params, ...body] = ex as any;
       return k((callback: any, ...args: any) =>
-        evalCps(["do", ...body], env.extend(params, args), callback)
+        evalCps(["begin", ...body], env.extend(params, args), callback)
       );
     }
-    case "do": {
+    case "begin": {
       const [_, ...exprs] = ex as any;
       const loop = ([h, ...t]: any[]): any =>
         t.length > 0 ? evalCps(h, env, () => loop(t)) : evalCps(h, env, k);
@@ -156,12 +163,14 @@ export const evalCps = (ex: Exp, env: Env, k: any): any => {
   }
 };
 
+// trampoline implements infinite recursion
 const trampoline = (f: any, ...args: any) => {
   let result = f(...args);
   while (typeof result === "function") result = result();
   return result;
 };
 
+// non cps evaluation implemented via trampoline + identity function
 const evaluate = (program: string, env = makeEnv(globalEnv)) =>
   trampoline(
     evalCps,
@@ -170,8 +179,9 @@ const evaluate = (program: string, env = makeEnv(globalEnv)) =>
     (res: any) => res
   );
 
+// tests
 const programs = [
-  ["((lambda (fun) (fun 2)) log)", undefined],
+  ["((lambda (fun) (fun 2)) display)", undefined],
   ["((lambda (fun) (fun 2)) (lambda (num) (+ num 1)))", 3],
   ["((lambda () 1))", 1],
   ["(((lambda () 1)))", 'Error: "1" is not callable'],
@@ -181,11 +191,11 @@ const programs = [
   ["(+ (+ 1 2) (+ 3 4))", 10],
   ["((lambda (a b) (+ a b)) 1 2)", 3],
   ["((lambda (a b) b) 1 2)", 2],
-  ["(do (define a 1) a)", 1],
-  ["(do (define a 1) ((lambda (ignored) (define a 2)) true) a)", 1],
-  ["(do (define a 1) (set! a 2) a)", 2],
+  ["(begin (define a 1) a)", 1],
+  ["(begin (define a 1) ((lambda (ignored) (define a 2)) true) a)", 1],
+  ["(begin (define a 1) (set! a 2) a)", 2],
   [
-    `(do
+    `(begin
       (define sum-to-n
         (lambda (n)
           (define sum-to-n-inner
@@ -202,14 +212,14 @@ const programs = [
   ],
   ["(if false 1 2)", 2],
   ["(if true 1 2)", 1],
-  ["(do (define add (lambda (a b) (+ a b))) (add 1 2) (add 3 4))", 7],
-  ["(do (log 1) 1)", 1],
+  ["(begin (define add (lambda (a b) (+ a b))) (add 1 2) (add 3 4))", 7],
+  ["(begin (display 1) 1)", 1],
   [
-    `(do
+    `(begin
       (define a 1)
       (define fun
         (lambda (ignored)
-          (log 1)
+          (display 1)
           (set! a 2)
         )
       )
@@ -238,9 +248,9 @@ const programs = [
   ],
   [
     `(let* (
-      (x (do (log 1) (+ 1 2)))
-      (y (do (log 2) 4))
-      (z (do (log 3) (+ x y))))
+      (x (begin (display 1) (+ 1 2)))
+      (y (begin (display 2) 4))
+      (z (begin (display 3) (+ x y))))
         (- (- x y) z)
     )`,
     -8,
@@ -248,14 +258,14 @@ const programs = [
   [
     `(let* (
       (add +)
-      (double (lambda (x) (log 1) (log x) (add x x)))
-      (quad (lambda (x) (log 2) (log x) (double (double x)))))
+      (double (lambda (x) (display 1) (display x) (add x x)))
+      (quad (lambda (x) (display 2) (display x) (double (double x)))))
         (quad 4)
     )`,
     16,
   ],
   [
-    `(do
+    `(begin
       (define sum-to-n
         (lambda (n)
           (define sum-to-n-inner
@@ -271,7 +281,7 @@ const programs = [
     50005000,
   ],
   [
-    `(do
+    `(begin
       (define fib
         (lambda (n)
           (if (= n 0)
@@ -293,9 +303,9 @@ const programs = [
       (sum-to-n 
         (lambda (n)
           (sum-to-n-inner n 0))))
-        (sum-to-n 10000)
+        (sum-to-n 100000)
     )`,
-    50005000,
+    5000050000,
   ],
   [
     `(letrec (
@@ -320,32 +330,51 @@ const programs = [
         (lambda (return)
           (return 2)
           3)))
-      (log (f (lambda (x) x)))
+      (display (f (lambda (x) x)))
       (call/cc f)
     )`,
     2,
   ],
-  // [
-  //   `(let* (
-  //     (yin
-  //       ((lambda (cc) (log 1) cc) (call/cc (lambda (c) c))))
-  //     (yang
-  //       ((lambda (cc) (log 2) cc) (call/cc (lambda (c) c))))
-  //     )
-  //   (yin yang))`,
-  //   undefined,
-  // ],
+  [
+    `(let* (
+      (yin
+        ((lambda (cc) (display 1) cc) (call/cc (lambda (c) c))))
+      (yang
+        ((lambda (cc) (display 2) cc) (call/cc (lambda (c) c))))
+      )
+    (yin yang))`,
+    "Error: that's enough",
+  ],
+  [
+    `((lambda (yin)
+        ((lambda (yang)
+          (yin yang)
+        ) ((lambda (cc) (display 2) cc) (call/cc (lambda (c) c))))
+      ) ((lambda (cc) (display 1) cc) (call/cc (lambda (c) c))))`,
+    "Error: that's enough",
+  ],
 ] as const;
 
+// basic test runner
 programs.slice().forEach(([program, expectation], i) => {
   let result = null;
+
   let logged = [] as any;
+  const env = makeEnv({
+    ...globalEnv,
+    // hack to make infinite tests stop at some point
+    display: (k: any, msg: any) => {
+      logged.push(msg);
+      if (logged.length > 100) throw "that's enough";
+      // return call to k to continue trampline
+      return k();
+    },
+  });
+
   try {
-    result = evaluate(
-      program,
-      makeEnv({ ...globalEnv, log: (k: any, msg: any) => k(logged.push(msg)) })
-    );
+    result = evaluate(program, env);
   } catch (e) {
+    // can check for "error state" completion
     result = `Error: ${e}`;
   } finally {
     const passed = result === expectation;
