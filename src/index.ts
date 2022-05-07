@@ -155,7 +155,10 @@ export const evalCps = (ex: Exp, env: Env, k: any): any => {
         }
         const loop = ([rawArg, ...rest]: any[], args: any[]) =>
           rawArg === undefined
-            ? () => proc(k, ...args)
+            ? () => proc(k, ...args) // return a thunk on user defined function
+                                     // invocation. This bounces off the
+                                     // trampoline and limits the depth of
+                                     // our recursion.
             : evalCps(rawArg, env, (arg: any) => loop(rest, [...args, arg]));
         return loop(rawArgs, []);
       });
